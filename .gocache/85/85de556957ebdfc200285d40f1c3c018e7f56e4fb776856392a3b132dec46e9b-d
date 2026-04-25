@@ -1,0 +1,3 @@
+# test log
+getenv TEST_DATABASE_DSN
+getenv TEST_DATABASE_DSN

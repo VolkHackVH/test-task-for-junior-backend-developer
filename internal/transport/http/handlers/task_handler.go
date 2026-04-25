@@ -27,7 +27,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	created, err := h.usecase.Create(r.Context(), taskusecase.CreateInput{
+	createdTask, err := h.usecase.Create(r.Context(), taskusecase.CreateInput{
 		Title:       req.Title,
 		Description: req.Description,
 		Status:      req.Status,
@@ -37,7 +37,37 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, newTaskDTO(created))
+	var createdRecurrence *taskdomain.Recurrence
+	if req.Recurrence != nil {
+		startDate, err := parseDate(req.Recurrence.StartDate)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+
+		specificDates, err := parseDates(req.Recurrence.SpecificDates)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+
+		createdRecurrence, err = h.usecase.CreateRecurrence(r.Context(), taskusecase.CreateRecurrenceInput{
+			TaskID:         createdTask.ID,
+			RecurrenceType: req.Recurrence.RecurrenceType,
+			IntervalDays:   req.Recurrence.IntervalDays,
+			DayOfMonth:     req.Recurrence.DayOfMonth,
+			StartDate:      startDate,
+			IsActive:       req.Recurrence.IsActive,
+			SpecificDates:  specificDates,
+		})
+		if err != nil {
+			writeUsecaseError(w, err)
+			return
+		}
+
+	}
+
+	writeJSON(w, http.StatusCreated, newTaskDTO(createdTask, createdRecurrence))
 }
 
 func (h *TaskHandler) GetByID(w http.ResponseWriter, r *http.Request) {
@@ -53,7 +83,18 @@ func (h *TaskHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, newTaskDTO(task))
+	var recurrence *taskdomain.Recurrence
+	recurrence, err = h.usecase.RecurrenceGetByTaskID(r.Context(), task.ID)
+	if err != nil {
+		if !errors.Is(err, taskdomain.ErrNotFound) {
+			writeUsecaseError(w, err)
+			return
+		}
+
+		recurrence = nil
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(task, recurrence))
 }
 
 func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
@@ -79,7 +120,60 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, newTaskDTO(updated))
+	var existingRecurrence *taskdomain.Recurrence
+	existingRecurrence, err = h.usecase.RecurrenceGetByTaskID(r.Context(), updated.ID)
+	if err != nil {
+		if !errors.Is(err, taskdomain.ErrNotFound) {
+			writeUsecaseError(w, err)
+			return
+		}
+
+		existingRecurrence = nil
+	}
+
+	var updatedRecurrence *taskdomain.Recurrence
+	if req.Recurrence != nil {
+		startDate, err := parseDate(req.Recurrence.StartDate)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+
+		specificDates, err := parseDates(req.Recurrence.SpecificDates)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+
+		if existingRecurrence != nil {
+			updatedRecurrence, err = h.usecase.RecurrenceUpdateByID(r.Context(), existingRecurrence.ID, taskusecase.UpdateRecurrenceInput{
+				RecurrenceType: req.Recurrence.RecurrenceType,
+				IntervalDays:   req.Recurrence.IntervalDays,
+				DayOfMonth:     req.Recurrence.DayOfMonth,
+				StartDate:      startDate,
+				IsActive:       req.Recurrence.IsActive,
+				SpecificDates:  specificDates,
+			})
+		} else {
+			updatedRecurrence, err = h.usecase.CreateRecurrence(r.Context(), taskusecase.CreateRecurrenceInput{
+				TaskID:         updated.ID,
+				RecurrenceType: req.Recurrence.RecurrenceType,
+				IntervalDays:   req.Recurrence.IntervalDays,
+				DayOfMonth:     req.Recurrence.DayOfMonth,
+				StartDate:      startDate,
+				IsActive:       req.Recurrence.IsActive,
+				SpecificDates:  specificDates,
+			})
+		}
+		if err != nil {
+			writeUsecaseError(w, err)
+			return
+		}
+	} else {
+		updatedRecurrence = existingRecurrence
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(updated, updatedRecurrence))
 }
 
 func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
@@ -106,7 +200,19 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	response := make([]taskDTO, 0, len(tasks))
 	for i := range tasks {
-		response = append(response, newTaskDTO(&tasks[i]))
+		var recurrence *taskdomain.Recurrence
+
+		recurrence, err = h.usecase.RecurrenceGetByTaskID(r.Context(), tasks[i].ID)
+		if err != nil {
+			if !errors.Is(err, taskdomain.ErrNotFound) {
+				writeUsecaseError(w, err)
+				return
+			}
+
+			recurrence = nil
+		}
+
+		response = append(response, newTaskDTO(&tasks[i], recurrence))
 	}
 
 	writeJSON(w, http.StatusOK, response)

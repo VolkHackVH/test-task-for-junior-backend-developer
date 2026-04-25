@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,7 +23,7 @@ func (r *Repository) Create(ctx context.Context, task *taskdomain.Task) (*taskdo
 	const query = `
 		INSERT INTO tasks (title, description, status, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, title, description, status, created_at, updated_at
+		RETURNING id, title, description, status, scheduled_for, source_task_id, created_at, updated_at
 	`
 
 	row := r.pool.QueryRow(ctx, query, task.Title, task.Description, task.Status, task.CreatedAt, task.UpdatedAt)
@@ -34,9 +35,33 @@ func (r *Repository) Create(ctx context.Context, task *taskdomain.Task) (*taskdo
 	return created, nil
 }
 
+func (r *Repository) CreateOccurrence(ctx context.Context, task *taskdomain.Task) error {
+	const query = `
+		INSERT INTO tasks (title, description, status, scheduled_for, source_task_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (source_task_id, scheduled_for)
+		WHERE source_task_id IS NOT NULL AND scheduled_for IS NOT NULL
+		DO NOTHING
+	`
+
+	_, err := r.pool.Exec(
+		ctx,
+		query,
+		task.Title,
+		task.Description,
+		task.Status,
+		task.ScheduledFor,
+		task.SourceTaskID,
+		task.CreatedAt,
+		task.UpdatedAt,
+	)
+
+	return err
+}
+
 func (r *Repository) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
 	const query = `
-		SELECT id, title, description, status, created_at, updated_at
+		SELECT id, title, description, status, scheduled_for, source_task_id, created_at, updated_at
 		FROM tasks
 		WHERE id = $1
 	`
@@ -62,7 +87,7 @@ func (r *Repository) Update(ctx context.Context, task *taskdomain.Task) (*taskdo
 			status = $3,
 			updated_at = $4
 		WHERE id = $5
-		RETURNING id, title, description, status, created_at, updated_at
+		RETURNING id, title, description, status, scheduled_for, source_task_id, created_at, updated_at
 	`
 
 	row := r.pool.QueryRow(ctx, query, task.Title, task.Description, task.Status, task.UpdatedAt, task.ID)
@@ -95,7 +120,7 @@ func (r *Repository) Delete(ctx context.Context, id int64) error {
 
 func (r *Repository) List(ctx context.Context) ([]taskdomain.Task, error) {
 	const query = `
-		SELECT id, title, description, status, created_at, updated_at
+		SELECT id, title, description, status, scheduled_for, source_task_id, created_at, updated_at
 		FROM tasks
 		ORDER BY id DESC
 	`
@@ -123,14 +148,27 @@ func (r *Repository) List(ctx context.Context) ([]taskdomain.Task, error) {
 	return tasks, nil
 }
 
+func (r *Repository) DeleteFutureOccurrencesBySourceTaskID(ctx context.Context, sourceTaskID int64, fromDate time.Time) error {
+	const query = `
+		DELETE FROM tasks
+		WHERE source_task_id = $1
+		  AND scheduled_for >= $2
+	`
+
+	_, err := r.pool.Exec(ctx, query, sourceTaskID, fromDate)
+	return err
+}
+
 type taskScanner interface {
 	Scan(dest ...any) error
 }
 
 func scanTask(scanner taskScanner) (*taskdomain.Task, error) {
 	var (
-		task   taskdomain.Task
-		status string
+		task         taskdomain.Task
+		status       string
+		scheduledFor *time.Time
+		sourceTaskID *int64
 	)
 
 	if err := scanner.Scan(
@@ -138,6 +176,8 @@ func scanTask(scanner taskScanner) (*taskdomain.Task, error) {
 		&task.Title,
 		&task.Description,
 		&status,
+		&scheduledFor,
+		&sourceTaskID,
 		&task.CreatedAt,
 		&task.UpdatedAt,
 	); err != nil {
@@ -145,6 +185,8 @@ func scanTask(scanner taskScanner) (*taskdomain.Task, error) {
 	}
 
 	task.Status = taskdomain.Status(status)
+	task.ScheduledFor = scheduledFor
+	task.SourceTaskID = sourceTaskID
 
 	return &task, nil
 }

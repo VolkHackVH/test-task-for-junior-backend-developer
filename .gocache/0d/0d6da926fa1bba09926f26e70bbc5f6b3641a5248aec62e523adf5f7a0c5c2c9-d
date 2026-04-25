@@ -1,0 +1,6 @@
+=== RUN   TestRecurrenceCreate_SpecificDates
+--- PASS: TestRecurrenceCreate_SpecificDates (0.04s)
+=== RUN   TestTaskRepo_Create
+--- PASS: TestTaskRepo_Create (0.02s)
+PASS
+ok  	example.com/taskservice/internal/repository/postgres	0.469s
